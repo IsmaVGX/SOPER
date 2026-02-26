@@ -5,6 +5,21 @@
 #include <pthread.h>
 #include "pow.h"
 
+/*Necesario para la variable global*/
+#include <stdatomic.h>
+#include <stdbool.h>
+
+atomic_bool resuelto = false;
+
+typedef struct
+{
+    int inicio;
+    int final;
+    int target;
+} datos_hilo;
+
+void *funcionPow(void *arg);
+
 int main(int argc, char *argv[])
 {
 
@@ -42,13 +57,20 @@ int main(int argc, char *argv[])
     {
         printf("Soy el minero. Rondas: %d, Hilos: %d\n", n_rounds, n_hilos);
 
-        target = pow_hash(target);
-
         pthread_t threads[n_hilos];
+        int escalon = POW_LIMIT / n_hilos;
 
         for (int i = 0; i < n_hilos; i++)
         {
-            pthread_create(&threads[i], NULL, funcion_hilo, NULL); //meTER AQUI una funcion, supongo
+            datos_hilo *args = malloc(sizeof(datos_hilo));
+            args->inicio = i * escalon;
+            args->final = (i + 1) * escalon;
+            args->target = target;
+
+            if (pthread_create(&threads[i], NULL, funcionPow, args) != 0)
+            {
+                perror("Error creando hilo");
+            }
         }
 
         for (int i = 0; i < n_hilos; i++)
@@ -56,6 +78,7 @@ int main(int argc, char *argv[])
             pthread_join(threads[i], NULL);
         }
 
+        /*Sale del minero*/
         int status;
         waitpid(pid, &status, 0);
 
@@ -67,9 +90,26 @@ int main(int argc, char *argv[])
         {
             printf("exit unexpected\n");
         }
+
+        wait(NULL);
+        printf("minero exit con status 0\n");
+        exit(EXIT_SUCCESS);
+    }
+}
+
+void *funcionPow(void *arg)
+{
+    datos_hilo *d = arg;
+
+    for (int i = d->inicio; i < d->final && !atomic_load(&resuelto); i++)
+    {
+        if (pow_hash(i) == d->target)
+        {
+            atomic_store(&resuelto, true);
+            printf("\n[Hilo] ¡Encontrado! Valor: %d\n", i);
+        }
     }
 
-    wait(NULL);
-    printf("minero exit con status 0\n");
-    exit(EXIT_SUCCESS);
+    free(d); // Liberamos la memoria que reservamos en el main
+    return NULL;
 }

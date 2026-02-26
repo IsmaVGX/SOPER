@@ -6,7 +6,7 @@ OBJS = miner.o pow.o
 all: $(TARGET)
 
 run: $(TARGET)
-	./$(TARGET) 10004 6 5
+	./$(TARGET) 10004 6 50
  
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
