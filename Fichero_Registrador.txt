@@ -1,0 +1,42 @@
+Id: 0
+Winner: 13387
+Target: 10004
+Solution: 1804679045
+Votes: 0/6
+Wallets: 13387:0
+
+Id: 1
+Winner: 13387
+Target: 10004
+Solution: 1804679045
+Votes: 1/6
+Wallets: 13387:1
+
+Id: 2
+Winner: 13387
+Target: 10004
+Solution: 22321
+Votes: 2/6
+Wallets: 13387:2
+
+Id: 3
+Winner: 13387
+Target: 10004
+Solution: 1804679045
+Votes: 3/6
+Wallets: 13387:3
+
+Id: 4
+Winner: 13387
+Target: 10004
+Solution: 22321
+Votes: 4/6
+Wallets: 13387:4
+
+Id: 5
+Winner: 13387
+Target: 10004
+Solution: 1804679045
+Votes: 5/6
+Wallets: 13387:5
+
