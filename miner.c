@@ -11,6 +11,8 @@
 #include <stdbool.h>
 
 atomic_bool resuelto = false;
+/*Variable por si dos hilos descubren la solucion exactamente a la vez*/
+pthread_mutex_t mutex_solucion = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct
 {
@@ -37,7 +39,6 @@ int main(int argc, char *argv[])
     pid_t pid;
     int n_hilos;
     int n_rounds;
-    pid_t registrador;
     int target_inicial;
     int contadorRondas = 0;
     int i = 0;
@@ -79,7 +80,7 @@ int main(int argc, char *argv[])
         pid_t parent_id = getppid();
         char fichero_registrador[64];
 
-        snprintf(fichero_registrador, sizeof(fichero_registrador), "registrador.log");
+        snprintf(fichero_registrador, sizeof(fichero_registrador), "%d.log", parent_id);
 
         int archivo = open(fichero_registrador, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (archivo == -1)
@@ -96,7 +97,7 @@ int main(int argc, char *argv[])
             if (mensaje.ronda == -1)
                 break;
 
-            dprintf(archivo, "Id: \t%d\n", mensaje.ronda);
+            dprintf(archivo, "Id: \t\t%d\n", mensaje.ronda);
             dprintf(archivo, "Winner: \t%d\n", parent_id);
             dprintf(archivo, "Target: \t%d\n", mensaje.target);
 
@@ -109,7 +110,7 @@ int main(int argc, char *argv[])
                 dprintf(archivo, "Solution: \t%08d (rejected)\n", mensaje.solucion);
             }
 
-            dprintf(archivo, "Votes: \t%d/%d\n", mensaje.ronda, n_rounds);
+            dprintf(archivo, "Votes: \t\t%d/%d\n", mensaje.ronda, n_rounds);
             dprintf(archivo, "Wallets: \t%d:%d\n", parent_id, mensaje.ronda);
 
             write(pipe_vuelta[1], &confirmacion, sizeof(int));
@@ -119,7 +120,6 @@ int main(int argc, char *argv[])
         close(pipe_ida[0]);
         close(pipe_vuelta[1]);
 
-        printf("Registrador %d\n", getpid());
         exit(EXIT_SUCCESS);
     }
     else if (pid > 0)
@@ -129,7 +129,6 @@ int main(int argc, char *argv[])
 
         int targetActual = target_inicial;
 
-        printf("Soy el minero. Rondas: %d, Hilos: %d\n", n_rounds, n_hilos);
 
         for (contadorRondas = 1; contadorRondas <= n_rounds; contadorRondas++)
         {
@@ -143,7 +142,7 @@ int main(int argc, char *argv[])
             {
                 args = malloc(sizeof(datos_hilo));
                 args->inicio = i * escalon;
-                args->final = (i + 1) * escalon;
+                args->final = (i == n_hilos - 1) ? POW_LIMIT : (i + 1) * escalon;
                 args->target = targetActual;
                 args->solucion = &solucionEncontrada;
 
@@ -167,19 +166,19 @@ int main(int argc, char *argv[])
             {
                 mensaje.solucion = solucionEncontrada;
                 mensaje.is_valid = true;
-                printf("Solucion aceptada: %08d", solucionEncontrada);
+                printf("Solution accepted: %08d --> %08d\n", targetActual, solucionEncontrada);
                 targetActual = solucionEncontrada;
             }
             else
             {
                 mensaje.solucion = -1;
                 mensaje.is_valid = false;
+                printf("Solution rejected: %08d\n", targetActual);
             }
 
             write(pipe_ida[1], &mensaje, sizeof(MensajePipe));
             int confirmacion;
             read(pipe_vuelta[0], &confirmacion, sizeof(int));
-
         }
         MensajePipe endMensaje;
         endMensaje.ronda = -1;
@@ -190,6 +189,16 @@ int main(int argc, char *argv[])
 
         int status;
         waitpid(pid, &status, 0);
+        if (WIFEXITED(status))
+        {
+            printf("Logger exited with status %d\n", WEXITSTATUS(status));
+        }
+        else
+        {
+            printf("Logger exited unexpectedly\n");
+        }
+
+        printf("Miner exited with status 0\n");
         exit(EXIT_SUCCESS);
     }
 }
@@ -203,8 +212,8 @@ void *funcionPow(void *arg)
         if (pow_hash(i) == d->target)
         {
             atomic_store(&resuelto, true);
-            printf("\n[Hilo] ¡Encontrado! Valor: %d\n", i);
             *(d->solucion) = i;
+            pthread_mutex_unlock(&mutex_solucion);
         }
     }
 
