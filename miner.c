@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
             }
 
             dprintf(archivo, "Votes: \t\t%d/%d\n", mensaje.ronda, n_rounds);
-            dprintf(archivo, "Wallets: \t%d:%d\n", parent_id, mensaje.ronda);
+            dprintf(archivo, "Wallets: \t%jd:%d\n", parent_id, mensaje.ronda);
 
             write(pipe_vuelta[1], &confirmacion, sizeof(int));
         }
