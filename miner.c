@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include "pow.h"
+#include <stdint.h>
 
 /*Necesario para la variable global*/
 #include <stdatomic.h>
@@ -80,7 +81,7 @@ int main(int argc, char *argv[])
         pid_t parent_id = getppid();
         char fichero_registrador[64];
 
-        snprintf(fichero_registrador, sizeof(fichero_registrador), "%d.log", parent_id);
+        snprintf(fichero_registrador, sizeof(fichero_registrador), "%jd.log", (intmax_t)parent_id);
 
         int archivo = open(fichero_registrador, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (archivo == -1)
@@ -98,7 +99,7 @@ int main(int argc, char *argv[])
                 break;
 
             dprintf(archivo, "Id: \t\t%d\n", mensaje.ronda);
-            dprintf(archivo, "Winner: \t%d\n", parent_id);
+            dprintf(archivo, "Winner: \t%jd\n", (intmax_t)parent_id);
             dprintf(archivo, "Target: \t%d\n", mensaje.target);
 
             if (mensaje.is_valid)
@@ -111,7 +112,7 @@ int main(int argc, char *argv[])
             }
 
             dprintf(archivo, "Votes: \t\t%d/%d\n", mensaje.ronda, n_rounds);
-            dprintf(archivo, "Wallets: \t%jd:%d\n", parent_id, mensaje.ronda);
+            dprintf(archivo, "Wallets: \t%jd:%d\n", (intmax_t)parent_id, mensaje.ronda);
             dprintf(archivo, "\n");
 
             write(pipe_vuelta[1], &confirmacion, sizeof(int));
