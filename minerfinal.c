@@ -208,8 +208,8 @@ int main(int argc, char *argv[])
 void *funcionPow(void *arg)
 {
     datos_hilo *d = arg;
-
-    for (int i = d->inicio; i < d->final && !atomic_load(&resuelto); i++)
+    int i;
+    for (i = d->inicio; i < d->final && !atomic_load(&resuelto); i++)
     {
         if (pow_hash(i) == d->target)
         {
