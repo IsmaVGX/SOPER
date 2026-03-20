@@ -1,6 +1,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
+
 
 int main(int argc, char *argv[]) {
   int sig;
@@ -14,7 +16,13 @@ int main(int argc, char *argv[]) {
   sig = atoi(argv[1] + 1);
   pid = (pid_t)atoi(argv[2]);
 
-  /* Complete the code. */
+  /* Enviamos la señal 'sig' al proceso 'pid' */
+  if (kill(pid, sig) == -1) {
+    perror("Error al enviar la señal"); // Imprime el motivo del fallo
+    exit(EXIT_FAILURE);
+  }
+
+  printf("Señal %d enviada con éxito al proceso %d\n", sig, pid);
 
   exit(EXIT_SUCCESS);
 }
