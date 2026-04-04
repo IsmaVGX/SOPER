@@ -17,6 +17,7 @@
 
 #define PIDS_FILE "pids.txt"
 #define SEM_MUTEX "/sem_miner_mutex"
+#define SEM_WINNER "/sem_miner_winner"
 #define FICHERO "target.tgt"
 
 atomic_bool resuelto = false;
@@ -25,6 +26,7 @@ pthread_mutex_t mutex_solucion = PTHREAD_MUTEX_INITIALIZER;
 // Para saber cuándo acaba el tiempo
 volatile sig_atomic_t tiempo_agotado = 0;
 volatile sig_atomic_t iniciada = 0;
+volatile sig_atomic_t alguien_gano = 0;
 
 typedef struct
 {
@@ -40,6 +42,9 @@ typedef struct
     int target;
     int solucion;
     bool is_valid;
+    int votos_favor;
+    int votos_total;
+    int monedas_ganadas;
 } MensajePipe;
 
 void *funcionPow(void *arg);
@@ -53,6 +58,11 @@ void manejador_alarma(int sig)
 void manejador_ronda(int sig)
 {
     iniciada = 1;
+}
+void manejador_victoria(int sig)
+{
+    alguien_gano = 1;
+    atomic_store(&resuelto, true);
 }
 
 int agregar_minero(pid_t mi_pid, sem_t *mutex)
@@ -214,8 +224,8 @@ int main(int argc, char *argv[])
             }
 
             // Solo quité n_rounds porque ya no existe como parámetro.
-            dprintf(archivo, "Votes: \t\t%d\n", mensaje.ronda);
-            dprintf(archivo, "Wallets: \t%jd:%d\n", (intmax_t)parent_id, mensaje.ronda);
+            dprintf(archivo, "Votes: \t\t%d/%d\n", mensaje.votos_favor, mensaje.votos_total);
+            dprintf(archivo, "Wallets: \t%jd:%d\n", (intmax_t)parent_id, mensaje.monedas_ganadas);
             dprintf(archivo, "\n");
 
             write(pipe_vuelta[1], &confirmacion, sizeof(int));
@@ -231,7 +241,7 @@ int main(int argc, char *argv[])
     {
         close(pipe_ida[0]);
         close(pipe_vuelta[1]);
-
+        int monedas = 0;
         pid_t mi_pid = getpid();
 
         // Alarma para que llame al manejador
@@ -252,6 +262,14 @@ int main(int argc, char *argv[])
         {
             exit(EXIT_FAILURE);
         }
+        struct sigaction act3;
+        act3.sa_handler = manejador_victoria;
+        sigemptyset(&(act3.sa_mask));
+        act3.sa_flags = 0;
+        if (sigaction(SIGUSR2, &act3, NULL))
+        {
+            exit(EXIT_FAILURE);
+        }
 
         // Semaforo para proteger el archivo txt de pid
         sem_t *mutex = sem_open(SEM_MUTEX, O_CREAT, 0644, 1);
@@ -260,7 +278,12 @@ int main(int argc, char *argv[])
             perror("Error inicializando el semáforo");
             exit(EXIT_FAILURE);
         }
-
+        sem_t *sem_winner = sem_open(SEM_WINNER, O_CREAT, 0644, 1);
+        if (sem_winner == SEM_FAILED)
+        {
+            perror("Error inicializando el semáforo de ganador");
+            exit(EXIT_FAILURE);
+        }
         alarm(n_secs);
 
         int primero;
@@ -280,7 +303,7 @@ int main(int argc, char *argv[])
 
             int njugadores = 0;
 
-            while (njugadores < 2 && !tiempo_agotado)
+            while (njugadores < 2 && tiempo_agotado == 0)
             {
                 sleep(1);
                 sem_wait(mutex);
@@ -298,7 +321,7 @@ int main(int argc, char *argv[])
                 }
                 sem_post(mutex);
             }
-            if (!tiempo_agotado)
+            if (tiempo_agotado == 0) // ideal
             {
                 sem_wait(mutex);
                 file = fopen(PIDS_FILE, "r");
@@ -316,7 +339,7 @@ int main(int argc, char *argv[])
             }
             else
             {
-                while (!iniciada && !tiempo_agotado)
+                while (iniciada == 0 && tiempo_agotado == 0)
                 {
 
                     pause();
@@ -326,24 +349,311 @@ int main(int argc, char *argv[])
         else
         {
 
-            while (!iniciada && !tiempo_agotado)
+            while (iniciada == 0 && tiempo_agotado == 0)
             {
                 pause();
             }
         }
-        if (!tiempo_agotado)
-        {
-            printf("Miner %d: ¡Empieza el minado!\n", mi_pid);
-        }
+        int r_actual = 0;
 
-        while (!tiempo_agotado)
+        while (tiempo_agotado == 0)
         {
-            pause();
-        }
+            int num_mineros_activos = 0;
+            sem_wait(mutex);
+            FILE *f_check = fopen(PIDS_FILE, "r");
+            if (f_check)
+            {
+                int pid;
+                while (fscanf(f_check, "%d", &pid) == 1)
+                {
+                    num_mineros_activos++;
+                }
+                fclose(f_check);
+            }
+            sem_post(mutex);
 
+            if (num_mineros_activos < 2)
+            {
+                sleep(1); // Esperamos un poco
+                continue; // Volvemos al inicio del while sin empezar la ronda
+            }
+            // ------------------------------------------
+
+            r_actual++;
+            alguien_gano = 0;
+            iniciada = 0;
+            atomic_store(&resuelto, false);
+            int solucion = -1;
+            int t_actual = 0;
+
+            // 1. LEER EL OBJETIVO ACTUAL
+            sem_wait(mutex);
+            FILE *file = fopen(FICHERO, "r");
+            if (file)
+            {
+                fscanf(file, "%d", &t_actual);
+                fclose(file);
+            }
+            sem_post(mutex);
+
+            printf("Miner %d: Empezando ronda %d (Target: %d)\n", mi_pid, r_actual, t_actual);
+
+            // 1. CREAR LOS EQUIPOS DE TRABAJO (HILOS)
+            pthread_t hilos[n_hilos];
+            int rango = POW_LIMIT / n_hilos;
+            int i;
+            for (i = 0; i < n_hilos; i++)
+            {
+                datos_hilo *datos = malloc(sizeof(datos_hilo));
+                datos->inicio = i * rango;
+                if (i == n_hilos - 1)
+                {
+                    datos->final = POW_LIMIT;
+                }
+                else
+                {
+                    datos->final = (i + 1) * rango;
+                }
+                datos->target = t_actual;
+                datos->solucion = &solucion;
+
+                if (pthread_create(&hilos[i], NULL, funcionPow, datos) != 0)
+                {
+                    perror("Error creando hilo");
+                    free(datos);
+                }
+            }
+
+            // 2. ESPERAR A QUE PASE ALGO
+            for (int i = 0; i < n_hilos; i++)
+            {
+                pthread_join(hilos[i], NULL);
+            }
+
+            // 3. COMPROBAR EL RESULTADO
+            if (solucion != -1)
+            {
+                // Intentamos ganar la carrera
+                if (sem_trywait(sem_winner) == 0)
+                {
+                    alguien_gano = 0; // Soy el ganador
+
+                    sem_wait(mutex);
+                    FILE *f_clean = fopen("votaciones.log", "w");
+                    if (f_clean)
+                        fclose(f_clean);
+                    sem_post(mutex);
+
+                    // 1. ESCRIBIR LA SOLUCIÓN EN EL FICHERO TARGET
+                    sem_wait(mutex);
+                    FILE *file_tgt = fopen(FICHERO, "w");
+                    if (file_tgt != NULL)
+                    {
+                        fprintf(file_tgt, "%d\n", solucion);
+                        fclose(file_tgt);
+                    }
+                    sem_post(mutex);
+
+                    // 2. AVISAR A LOS DEMÁS MINEROS (ARRANCA LA VOTACIÓN)
+                    sem_wait(mutex);
+                    FILE *f_pids = fopen(PIDS_FILE, "r");
+                    if (f_pids != NULL)
+                    {
+                        int pid_dest;
+                        while (fscanf(f_pids, "%d", &pid_dest) == 1)
+                        {
+                            if (pid_dest != mi_pid)
+                                kill(pid_dest, SIGUSR2);
+                        }
+                        fclose(f_pids);
+                    }
+                    sem_post(mutex);
+
+                    printf("Miner %d: ¡He ganado! He avisado a todos.\n", mi_pid);
+
+                    // 3. ESPERAR VOTOS Y CONTAR (Espera corta dinámica en vez de sleep)
+                    int num_mineros = 0, v = 0, n = 0, intentos = 0;
+                    sem_wait(mutex);
+                    FILE *f_pids_count = fopen(PIDS_FILE, "r");
+                    if (f_pids_count)
+                    {
+                        int tmp;
+                        while (fscanf(f_pids_count, "%d", &tmp) == 1)
+                            num_mineros++;
+                        fclose(f_pids_count);
+                    }
+                    sem_post(mutex);
+
+                    int esperados = num_mineros - 1;
+                    char cadena_votos[256] = ""; // <-- AÑADIDO: Para guardar las letras Y/N
+
+                    // Máximo 3 intentos. Si no están los votos, dormimos 1 segundo entero.
+                    while (intentos < 3 && (v + n) < esperados && tiempo_agotado == 0)
+                    {
+                        v = 0;
+                        n = 0;
+                        int pos = 0; // <-- AÑADIDO: Posición para escribir en la cadena
+                        sem_wait(mutex);
+                        FILE *f_votos = fopen("votaciones.log", "r");
+                        if (f_votos)
+                        {
+                            char c;
+                            while (fscanf(f_votos, " %c", &c) == 1)
+                            {
+                                if (c == 'V')
+                                {
+                                    v++;
+                                    cadena_votos[pos++] = 'Y'; // Replicamos el PDF
+                                }
+                                else if (c == 'N')
+                                {
+                                    n++;
+                                    cadena_votos[pos++] = 'N'; // Replicamos el PDF
+                                }
+                            }
+                            fclose(f_votos);
+                        }
+                        sem_post(mutex);
+
+                        cadena_votos[pos] = '\0'; // <-- AÑADIDO: Cerramos la cadena
+
+                        if ((v + n) < esperados)
+                        {
+                            sleep(1);
+                            intentos++;
+                        }
+                    }
+
+                    if (v >= n && (v + n) > 0)
+                    {
+                        // <-- CAMBIADO: Ahora imprime la cadena de letras
+                        printf("Winner %d => [%s] => Accepted\n", mi_pid, cadena_votos);
+                        monedas++;
+                        // Si se acepta, la solución ganadora es el nuevo objetivo de la próxima ronda
+                        sem_wait(mutex);
+                        FILE *f_new_tgt = fopen(FICHERO, "w");
+                        if (f_new_tgt)
+                        {
+                            fprintf(f_new_tgt, "%d\n", solucion);
+                            fclose(f_new_tgt);
+                        }
+                        sem_post(mutex);
+                    }
+                    else
+                    {
+                        // <-- CAMBIADO: Ahora imprime la cadena de letras
+                        printf("Winner %d => [%s] => Rejected\n", mi_pid, cadena_votos);
+                    }
+                    MensajePipe msg;
+                    msg.ronda = r_actual;
+                    msg.target = t_actual;
+                    msg.solucion = solucion;
+                    msg.is_valid = (v >= n && (v + n) > 0);
+                    msg.votos_favor = v;
+                    msg.votos_total = v + n;
+                    msg.monedas_ganadas = monedas;
+
+                    write(pipe_ida[1], &msg, sizeof(MensajePipe));
+
+                    int confirmacion;
+                    read(pipe_vuelta[0], &confirmacion, sizeof(int));
+
+                    // 4. AVISO A TODOS DE NUEVA RONDA (SIGUSR1) Y LIBERO SEMÁFORO
+                    sem_wait(mutex);
+                    FILE *f_pids_arranque = fopen(PIDS_FILE, "r");
+                    if (f_pids_arranque)
+                    {
+                        int pid_dest;
+                        while (fscanf(f_pids_arranque, "%d", &pid_dest) == 1)
+                        {
+                            if (pid_dest != mi_pid)
+                                kill(pid_dest, SIGUSR1);
+                        }
+                        fclose(f_pids_arranque);
+                    }
+                    sem_post(mutex);
+
+                    sem_post(sem_winner); // Libero para la siguiente carrera
+                }
+                else
+                {
+                    // No conseguimos el semáforo, somos votantes
+                    alguien_gano = 1;
+                }
+            }
+
+            // SI SOMOS VOTANTES (PERDEDORES)
+            if (alguien_gano == 1)
+            {
+                int solucion_winner = 0;
+
+                // 1. LEER QUÉ HA ESCRITO EL GANADOR
+                sem_wait(mutex);
+                FILE *file_read = fopen(FICHERO, "r");
+                if (file_read != NULL)
+                {
+                    fscanf(file_read, "%d", &solucion_winner);
+                    fclose(file_read);
+                }
+
+                bool es_valida = false;
+                FILE *file2 = fopen("votaciones.log", "a");
+                if (file2 != NULL)
+                {
+                    if (pow_hash(solucion_winner) == t_actual)
+                    {
+                        printf("Miner %d: Solución %d VALIDADA.\n", mi_pid, solucion_winner);
+                        fprintf(file2, " V ");
+                        es_valida = true;
+                    }
+                    else
+                    {
+                        printf("Miner %d: Solución %d FALSA.\n", mi_pid, solucion_winner);
+                        fprintf(file2, " N ");
+                        es_valida = false;
+                    }
+                    fclose(file2);
+                }
+                sem_post(mutex);
+
+                MensajePipe msg;
+                msg.ronda = r_actual;
+                msg.target = t_actual;
+                msg.solucion = solucion_winner;
+                msg.is_valid = es_valida;
+                if (es_valida)
+                {
+                    msg.votos_favor = 1;
+                }
+                else
+                {
+                    msg.votos_favor = 0;
+                }
+                msg.votos_total = 1;
+                msg.monedas_ganadas = monedas;
+
+                write(pipe_ida[1], &msg, sizeof(MensajePipe));
+
+                int confirmacion;
+                read(pipe_vuelta[0], &confirmacion, sizeof(int));
+                // -----------------------------------------
+
+                // 3. VOTANTE ESPERA LA SEÑAL (SIGUSR1) DE LA SIGUIENTE RONDA
+                iniciada = 0;
+                while (iniciada == 0 && tiempo_agotado == 0)
+                {
+                    pause();
+                }
+            }
+
+            if (tiempo_agotado == 1)
+            {
+                break;
+            }
+        }
         eliminar_minero(mi_pid, mutex);
-        sem_close(mutex);
-
+        sem_close(sem_winner);
+        sem_unlink(SEM_WINNER);
         MensajePipe endMensaje;
         endMensaje.ronda = -1;
         write(pipe_ida[1], &endMensaje, sizeof(MensajePipe));
