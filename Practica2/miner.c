@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
@@ -16,12 +17,14 @@
 
 #define PIDS_FILE "pids.txt"
 #define SEM_MUTEX "/sem_miner_mutex"
+#define FICHERO "target.tgt"
 
 atomic_bool resuelto = false;
 pthread_mutex_t mutex_solucion = PTHREAD_MUTEX_INITIALIZER;
 
 // Para saber cuándo acaba el tiempo
 volatile sig_atomic_t tiempo_agotado = 0;
+volatile sig_atomic_t iniciada = 0;
 
 typedef struct
 {
@@ -47,29 +50,49 @@ void manejador_alarma(int sig)
     tiempo_agotado = 1;
 }
 
-// He sacado esto a una funcion para no tener un main infinito que sino gemini me decia que era muy gitano tenerlo en el main
-void agregar_minero(pid_t mi_pid, sem_t *mutex)
+void manejador_ronda(int sig)
 {
+    iniciada = 1;
+}
+
+int agregar_minero(pid_t mi_pid, sem_t *mutex)
+{
+    int primer = 1;
+
     sem_wait(mutex);
 
     FILE *f = fopen(PIDS_FILE, "a+");
     if (f != NULL)
     {
-        fprintf(f, "%d\n", mi_pid);
         rewind(f);
 
+        int pid_leido;
+        int num_pids = 0;
+        while (fscanf(f, "%d", &pid_leido) == 1)
+        {
+            num_pids++;
+        }
+        if (num_pids > 0)
+        {
+            primer = 0;
+        }
+        fprintf(f, "%d\n", mi_pid);
+
+        rewind(f);
         printf("Miner %d added to system\n", mi_pid);
         printf("Current miners: ");
-        int pid_leido;
         while (fscanf(f, "%d", &pid_leido) == 1)
         {
             printf("%d ", pid_leido);
         }
         printf("\n");
+
         fclose(f);
     }
 
     sem_post(mutex);
+
+    return primer;
 }
 
 void eliminar_minero(pid_t mi_pid, sem_t *mutex)
@@ -129,7 +152,7 @@ int main(int argc, char *argv[])
 
     if (argc != 3)
     {
-        printf("Uso: %s <N_SECS> <N_THREADS>\n", argv);
+        printf("Uso: %s <N_SECS> <N_THREADS>\n", argv[0]);
         return -1;
     }
 
@@ -155,7 +178,7 @@ int main(int argc, char *argv[])
     else if (pid == 0)
     {
         close(pipe_ida[1]);
-        close(pipe_vuelta);
+        close(pipe_vuelta[0]);
 
         pid_t parent_id = getppid();
         char fichero_registrador[64];
@@ -172,7 +195,7 @@ int main(int argc, char *argv[])
         MensajePipe mensaje;
         int confirmacion = 1;
 
-        while (read(pipe_ida, &mensaje, sizeof(MensajePipe)) > 0)
+        while (read(pipe_ida[0], &mensaje, sizeof(MensajePipe)) > 0)
         {
             if (mensaje.ronda == -1)
                 break;
@@ -199,14 +222,14 @@ int main(int argc, char *argv[])
         }
 
         close(archivo);
-        close(pipe_ida);
+        close(pipe_ida[0]);
         close(pipe_vuelta[1]);
 
         exit(EXIT_SUCCESS);
     }
     else if (pid > 0)
     {
-        close(pipe_ida);
+        close(pipe_ida[0]);
         close(pipe_vuelta[1]);
 
         pid_t mi_pid = getpid();
@@ -221,6 +244,14 @@ int main(int argc, char *argv[])
             perror("Error configurando sigaction");
             exit(EXIT_FAILURE);
         }
+        struct sigaction act2;
+        act2.sa_handler = manejador_ronda;
+        sigemptyset(&(act2.sa_mask));
+        act2.sa_flags = 0;
+        if (sigaction(SIGUSR1, &act2, NULL) < 0)
+        {
+            exit(EXIT_FAILURE);
+        }
 
         // Semaforo para proteger el archivo txt de pid
         sem_t *mutex = sem_open(SEM_MUTEX, O_CREAT, 0644, 1);
@@ -230,8 +261,80 @@ int main(int argc, char *argv[])
             exit(EXIT_FAILURE);
         }
 
-        agregar_minero(mi_pid, mutex);
         alarm(n_secs);
+
+        int primero;
+        primero = agregar_minero(mi_pid, mutex);
+        if (primero == 1)
+        {
+            sem_wait(mutex);
+
+            FILE *file = fopen(FICHERO, "w");
+            if (file != NULL)
+            {
+                fprintf(file, "0\n");
+                fclose(file);
+            }
+
+            sem_post(mutex);
+
+            int njugadores = 0;
+
+            while (njugadores < 2 && !tiempo_agotado)
+            {
+                sleep(1);
+                sem_wait(mutex);
+                FILE *file = fopen(PIDS_FILE, "r");
+                if (file != NULL)
+                {
+                    njugadores = 0;
+                    int leido;
+
+                    while (fscanf(file, "%d", &leido) == 1)
+                    {
+                        njugadores++;
+                    }
+                    fclose(file);
+                }
+                sem_post(mutex);
+            }
+            if (!tiempo_agotado)
+            {
+                sem_wait(mutex);
+                file = fopen(PIDS_FILE, "r");
+                if (file != NULL)
+                {
+                    int pid_leido;
+                    while (fscanf(file, "%d", &pid_leido) == 1)
+                    {
+
+                        kill(pid_leido, SIGUSR1);
+                    }
+                    fclose(file);
+                }
+                sem_post(mutex);
+            }
+            else
+            {
+                while (!iniciada && !tiempo_agotado)
+                {
+
+                    pause();
+                }
+            }
+        }
+        else
+        {
+
+            while (!iniciada && !tiempo_agotado)
+            {
+                pause();
+            }
+        }
+        if (!tiempo_agotado)
+        {
+            printf("Miner %d: ¡Empieza el minado!\n", mi_pid);
+        }
 
         while (!tiempo_agotado)
         {
@@ -246,7 +349,7 @@ int main(int argc, char *argv[])
         write(pipe_ida[1], &endMensaje, sizeof(MensajePipe));
 
         close(pipe_ida[1]);
-        close(pipe_vuelta);
+        close(pipe_vuelta[0]);
 
         int status;
         waitpid(pid, &status, 0);
