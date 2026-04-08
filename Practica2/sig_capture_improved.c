@@ -1,10 +1,11 @@
+#define _POSIX_C_SOURCE 200809L /* Me da error sin esto*/
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-static volatile sig_atomic_t got_signal = 0;
+static volatile sig_atomic_t got_signal = 0;/* Ellos tambien usan atomic, Gemini pionera*/
 
 /* Handler function for the signal SIGINT. */
 void handler(int sig) { got_signal = 1; }
