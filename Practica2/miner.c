@@ -23,7 +23,6 @@
 atomic_bool resuelto = false;
 pthread_mutex_t mutex_solucion = PTHREAD_MUTEX_INITIALIZER;
 
-// Para saber cuándo acaba el tiempo
 volatile sig_atomic_t tiempo_agotado = 0;
 volatile sig_atomic_t iniciada = 0;
 volatile sig_atomic_t alguien_gano = 0;
